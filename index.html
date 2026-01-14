@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Master Plan CRM (Clean Light UI)</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Font: Plus Jakarta Sans (Modern Geometric Sans) -->
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- SweetAlert2 -->
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+  <!-- LOGIKA APLIKASI -->
+  <script>
+    // --- KONFIGURASI API (SUDAH DIUPDATE) ---
+    // URL Backend Google Apps Script Anda
+    const API_URL = "https://script.google.com/macros/s/AKfycbytc3Noq6GiuKtqkwoibCUcBQO7S7NF4A46lnCESzG8w_Z5rifp38m8Qab8bgIgH90W/exec"; 
+
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['"Plus Jakarta Sans"', 'sans-serif'] },
+          colors: {
+            primary: { DEFAULT: "#0f172a", foreground: "#f8fafc" }, 
+            secondary: { DEFAULT: "#334155", foreground: "#ffffff" }, 
+            accent: { DEFAULT: "#2563eb", foreground: "#ffffff" }, 
+            surface: "#ffffff",
+            background: "#f8fafc"
+          },
+          boxShadow: {
+            'card': '0 2px 8px rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.04)',
+            'card-hover': '0 12px 24px -8px rgba(15, 23, 42, 0.08), 0 4px 8px -4px rgba(15, 23, 42, 0.04)'
+          }
+        }
+      }
+    }
+
+    function crmApp() {
+      return {
+        // STATE
+        view: 'login',
+        isLoading: false,
+        isSidebarOpen: false,
+        user: null,
+        
+        logoUrl: 'https://i.imgur.com/cRCNBYw.png',
+        
+        customers: [],
+        interactions: [],
+        metaData: { sources: [], divisions: [], products: [], users: [] },
+        
+        loginForm: { email: '', password: '' },
+        showFilterModal: false,
+        showFormModal: false,
+        formType: 'customer', formMode: 'add', formData: {}, selectedCustomer: null,
+        filters: { search: '', status: '', minDana: '', maxDana: '', division_id: '', createdBy: '', startDate: '', endDate: '' },
+
+        init() {
+          this.$watch('view', () => { 
+             setTimeout(() => lucide.createIcons(), 50); 
+             window.scrollTo(0,0);
+          });
+          this.$watch('showFormModal', (v) => v && setTimeout(() => lucide.createIcons(), 100));
+        },
+
+        // --- API HELPER (PENGGANTI GOOGLE.SCRIPT.RUN) ---
+        async callApi(action, data = {}) {
+          if (!API_URL) {
+             Swal.fire("Error Konfigurasi", "API_URL belum diisi di kode HTML.", "error");
+             throw new Error("API URL Missing");
+          }
+
+          // Gunakan fetch dengan method POST (no-cors tidak bisa baca response, jadi pakai default cors)
+          // Google Apps Script redirect post request, fetch API handle ini otomatis.
+          // Kita kirim sebagai plain JSON string di body agar doPost GAS bisa baca
+          const payload = JSON.stringify({ action: action, data: data });
+
+          try {
+            const response = await fetch(API_URL, {
+              method: "POST",
+              // Penting: mode 'cors' agar bisa baca balasan JSON
+              body: payload
+            });
+
+            const result = await response.json();
+            
+            if (result.status === 'error') {
+               throw new Error(result.message);
+            }
+            return result.data;
+
+          } catch (error) {
+            console.error("API Error:", error);
+            throw error;
+          }
+        },
+
+        // AUTH
+        async login() {
+          this.isLoading = true;
+          
+          // Mode Simulasi (Jika API URL Kosong atau offline)
+          if (!API_URL || this.loginForm.email.includes('demo')) {
+            setTimeout(() => {
+              let role = this.loginForm.email.includes('admin') ? 'superadmin' : 'marketing';
+              this.user = { id: 'u_sim', name: 'User Demo', role: role, division_id: 'div_1' };
+              this.loadDummyData();
+              this.view = 'dashboard';
+              this.isLoading = false;
+            }, 800);
+            return;
+          }
+
+          // Mode Live (Connect ke Google Sheet)
+          try {
+            const res = await this.callApi('login', { 
+               email: this.loginForm.email, 
+               password: this.loginForm.password 
+            });
+            this.user = res.user; // API return { success: true, user: {...} } -> disesuaikan di GAS wrapper jadi data langsung user
+            await this.loadData();
+            this.view = 'dashboard';
+          } catch (err) {
+            Swal.fire('Login Gagal', err.message, 'error');
+          } finally {
+            this.isLoading = false;
+          }
+        },
+
+        logout() { this.user = null; this.view = 'login'; this.loginForm = {email:'', password:''}; },
+
+        // DATA LOADING
+        async loadData() {
+          this.isLoading = true;
+          try {
+             if(!API_URL) { this.loadDummyData(); return; }
+
+             // PERBAIKAN: Menggunakan Promise.all untuk fetch data secara PARALEL (Bersamaan)
+             // Ini akan memangkas waktu loading secara signifikan dibanding fetch satu per satu
+             const [meta, cust, interact] = await Promise.all([
+                this.callApi('getMetaData'),
+                this.callApi('getCustomers', { userId: this.user.id }),
+                this.callApi('getInteractions', { userId: this.user.id })
+             ]);
+
+             // Set data setelah semua selesai didownload
+             this.metaData = meta;
+             this.customers = cust;
+             this.interactions = interact;
+
+             setTimeout(() => lucide.createIcons(), 50);
+
+          } catch (err) {
+             console.error(err);
+             Swal.fire('Gagal Memuat Data', 'Koneksi lambat atau terjadi kesalahan: ' + err.message, 'error');
+          } finally {
+             this.isLoading = false;
+          }
+        },
+
+        loadDummyData() {
+           this.metaData = {
+              sources: [{id:"s1", name:"Website"}, {id:"s2", name:"Instagram"}],
+              divisions: [{id:"div_1", name:"Sales Pusat"}, {id:"div_2", name:"Cabang Bali"}],
+              products: [{id:"p1", name:"Excavator PC200", price: 1500000000}, {id:"p2", name:"Dump Truck", price: 800000000}],
+              users: [{id:"u1", name:"Admin", role:"superadmin"}, {id:"u_sim", name:"Sales A", role:"marketing"}]
+           };
+           this.customers = [
+              {id:"c1", name:"PT Konstruksi Jaya", email:"boss@jaya.com", phone:"08123", status:"Hot", estimation_value: 500000000, products: ["p1"], assigned_to: "u_sim", division_id: "div_1", created_at: new Date().toISOString(), created_by: "u_sim"},
+              {id:"c2", name:"Budi Santoso", email:"budi@mail.com", phone:"08111", status:"New", estimation_value: 100000000, products: [], assigned_to: "u_sim", division_id: "div_1", created_at: new Date().toISOString(), created_by: "u_sim"}
+           ];
+           this.interactions = [{id:"i1", customer_id:"c1", customer_name:"PT Konstruksi Jaya", type:"call", status:"pending", notes:"Follow up", due_date: new Date().toISOString()}];
+           this.isLoading = false; setTimeout(() => lucide.createIcons(), 50);
+        },
+
+        // HELPERS
+        formatCurrency(val) { return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(val || 0); },
+        formatDate(str) { return str ? new Date(str).toLocaleDateString('id-ID', {day: 'numeric', month: 'short', year: 'numeric'}) : '-'; },
+        calculatePotential(pids) { if(!pids || !Array.isArray(pids)) return 0; return pids.reduce((sum, pid) => sum + (this.metaData.products.find(p => p.id === pid)?.price || 0), 0); },
+        getStatusColor(s) { 
+          if(['New', 'Pending'].includes(s)) return 'bg-slate-100 text-slate-600 border-slate-200';
+          if(['Hot', 'Overdue'].includes(s)) return 'bg-red-50 text-red-600 border-red-200';
+          if(['Deal', 'Done'].includes(s)) return 'bg-emerald-50 text-emerald-600 border-emerald-200';
+          if(['Warm'].includes(s)) return 'bg-amber-50 text-amber-600 border-amber-200';
+          return 'bg-blue-50 text-blue-600 border-blue-200';
+        },
+        getMetaName(type, id) { return this.metaData[type]?.find(x => x.id == id)?.name || '-'; },
+        getMetaPrice(id) { return this.metaData.products?.find(p => p.id == id)?.price || 0; },
+        
+        // ACTIONS
+        setView(v) { this.view = v; this.isSidebarOpen = false; },
+        selectCustomer(c) { this.selectedCustomer = c; this.view = 'detail'; },
+        resetFilters() { this.filters = { search: '', status: '', minDana: '', maxDana: '', division_id: '', createdBy: '', startDate: '', endDate: '' }; },
+        
+        openModal(type, item = null) {
+          this.formType = type; this.formMode = item ? 'edit' : 'add'; this.showFormModal = true;
+          this.formData = item ? JSON.parse(JSON.stringify(item)) : {};
+          if(!item) {
+             if(type==='customer') this.formData = {status:'New', products:[], division_id: this.user.division_id, source_id: this.metaData.sources[0]?.id};
+             if(type==='interaction') this.formData = {type:'call', status:'pending', due_date: new Date().toISOString().split('T')[0]};
+             if(type==='user') this.formData = {role:'marketing'};
+          }
+        },
+
+        async submitForm() {
+          this.isLoading = true;
+          let d = this.formData;
+          // Logic Assign ID otomatis untuk Marketing
+          if (this.formType === 'customer' && this.formMode === 'add' && this.user.role === 'marketing') { 
+              d.created_by = this.user.id; d.assigned_to = this.user.id; d.division_id = this.user.division_id; 
+          }
+          if (this.formType === 'interaction') { 
+              d.user_id = this.user.id; d.customer_id = this.selectedCustomer.id; d.customer_name = this.selectedCustomer.name; 
+          }
+
+          try {
+             if(!API_URL) {
+                 // Fallback Simulasi
+                 setTimeout(() => {
+                    if(this.formType==='customer' && this.formMode==='add') this.customers.unshift({...d, id:Date.now()});
+                    if(this.formType==='interaction') this.interactions.push({...d, id:Date.now()});
+                    if(this.selectedCustomer?.id === d.id) this.selectedCustomer = d;
+                    this.showFormModal = false; this.isLoading = false; Swal.fire('Berhasil', 'Data disimpan (Simulasi)', 'success');
+                 }, 500);
+                 return;
+             }
+
+             // Call API
+             await this.callApi('saveItem', { type: this.formType, data: d });
+             
+             // Refresh Data
+             await this.loadData();
+             this.showFormModal = false; 
+             Swal.fire('Sukses', 'Data berhasil disimpan ke Database', 'success');
+
+          } catch (err) {
+             Swal.fire('Gagal Menyimpan', err.message, 'error');
+          } finally {
+             this.isLoading = false;
+          }
+        },
+
+        deleteItem(type, id) {
+           Swal.fire({title:'Hapus?', text: "Data akan dihapus permanen dari Sheet", icon:'warning', showCancelButton:true, confirmButtonColor:'#ef4444'}).then(async (r) => {
+              if(r.isConfirmed) {
+                 this.isLoading = true;
+                 try {
+                     if(!API_URL) {
+                        this.customers = this.customers.filter(c=>c.id!==id); 
+                        this.isLoading=false;
+                        return;
+                     }
+                     await this.callApi('deleteItem', { type, id });
+                     await this.loadData();
+                     if(this.view === 'detail') this.view = 'customers';
+                     Swal.fire('Terhapus', 'Data dihapus.', 'success');
+                 } catch(err) {
+                     Swal.fire('Error', err.message, 'error');
+                 } finally {
+                     this.isLoading = false;
+                 }
+              }
+           });
+        },
+        
+        async markDone(id) {
+           this.isLoading = true;
+           try {
+               if(!API_URL) {
+                   const i=this.interactions.find(x=>x.id===id); if(i) i.status='done';
+                   this.isLoading=false;
+                   return;
+               }
+               await this.callApi('updateInteractionStatus', { id, status: 'done' });
+               await this.loadData();
+               Swal.fire('Selesai', 'Tugas ditandai selesai', 'success');
+           } catch(err) {
+               Swal.fire('Error', err.message, 'error');
+           } finally {
+               this.isLoading = false;
+           }
+        },
+
+        // GETTERS (TIDAK BERUBAH)
+        getFilteredCustomers() {
+           return this.customers.filter(c => {
+              const f = this.filters;
+              const searchLower = f.search.toLowerCase();
+              if (f.search && !c.name.toLowerCase().includes(searchLower) && !c.company?.toLowerCase().includes(searchLower)) return false;
+              if (f.status && c.status !== f.status) return false;
+              if (f.startDate && new Date(c.created_at) < new Date(f.startDate)) return false;
+              if (f.endDate && new Date(c.created_at) > new Date(f.endDate + 'T23:59:59')) return false;
+              if (f.division_id && String(c.division_id) !== String(f.division_id)) return false;
+              if (f.createdBy && String(c.created_by) !== String(f.createdBy)) return false;
+              return true;
+           });
+        },
+        
+        getAllTasks() {
+           return [...this.interactions].sort((a,b) => (a.status==='pending' ? -1 : 1) || (a.status==='pending' ? new Date(a.due_date)-new Date(b.due_date) : new Date(b.due_date)-new Date(a.due_date)));
+        },
+        
+        getCurrentInteractions() { 
+           return this.selectedCustomer ? this.interactions.filter(i => i.customer_id === this.selectedCustomer.id).sort((a,b) => new Date(b.created_at)-new Date(a.created_at)) : []; 
+        },
+        
+        getMasterList() { 
+           const v = this.view; 
+           if(v.includes('products')) return this.metaData.products; 
+           if(v.includes('users')) return this.metaData.users; 
+           if(v.includes('sources')) return this.metaData.sources; 
+           if(v.includes('divisions')) return this.metaData.divisions; 
+           return []; 
+        },
+        
+        getPendingTasksCount() {
+           return this.interactions.filter(i => i.status === 'pending').length;
+        },
+        
+        getTotalPipelineValue() {
+           return this.customers.reduce((sum, c) => sum + this.calculatePotential(c.products), 0);
+        },
+        
+        getActiveFiltersCount() {
+           return Object.values(this.filters).filter(Boolean).length;
+        },
+
+        getRecentCustomers() {
+           return [...this.customers].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 5);
+        }
+      }
+    }
+  </script>
+  
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .animate-in { animation: fadeIn 0.4s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+
+<body class="bg-background text-slate-800 font-sans pb-safe antialiased" x-data="crmApp()">
+
+  <!-- LOADING -->
+  <div x-show="isLoading" class="fixed inset-0 z-[100] flex items-center justify-center bg-white/80 backdrop-blur-sm" x-cloak>
+    <div class="bg-white p-6 rounded-2xl shadow-2xl flex flex-col items-center animate-bounce">
+      <div class="w-10 h-10 border-4 border-accent border-t-transparent rounded-full animate-spin mb-3"></div>
+      <span class="text-sm font-bold text-slate-600">Memproses...</span>
+    </div>
+  </div>
+
+  <!-- LOGIN PAGE -->
+  <template x-if="view === 'login'">
+    <div class="min-h-screen flex items-center justify-center p-6 relative overflow-hidden bg-slate-50">
+      <div class="absolute inset-0 bg-gradient-to-br from-primary to-slate-900 opacity-90 h-1/2 rounded-b-[40px]"></div>
+      <div class="relative z-10 bg-white p-10 rounded-3xl shadow-2xl w-full max-w-sm border border-slate-100">
+        <div class="flex justify-center mb-6">
+           <!-- LOGO LOGIN: Diganti dari Icon ke Image -->
+           <img :src="logoUrl" alt="Logo CRM" class="h-16 w-auto object-contain mix-blend-multiply">
+        </div>
+        <h1 class="text-2xl font-bold text-center text-slate-900 mb-1">Selamat Datang</h1>
+        <p class="text-center text-slate-500 text-sm mb-8">Masuk untuk mengelola penjualan.</p>
+        
+        <form @submit.prevent="login" class="space-y-5">
+          <input type="email" x-model="loginForm.email" class="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-accent outline-none text-sm font-medium" placeholder="Email Address" required>
+          <input type="password" x-model="loginForm.password" class="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-accent outline-none text-sm font-medium" placeholder="Password" required>
+          <button type="submit" class="w-full py-3.5 bg-primary text-white rounded-xl font-bold shadow-lg hover:bg-slate-800 transition-all active:scale-[0.98]">Masuk Aplikasi</button>
+        </form>
+        <div class="mt-8 text-center text-xs text-slate-400">
+             <div x-show="!API_URL">Mode Demo (Data Simulasi)</div>
+             <div x-show="API_URL" class="text-emerald-600 font-bold">Terhubung ke Database</div>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- MAIN APP -->
+  <template x-if="view !== 'login'">
+    <div class="flex h-screen overflow-hidden bg-background">
+      
+      <!-- MOBILE MENU OVERLAY -->
+      <div x-show="isSidebarOpen" @click="isSidebarOpen = false" x-transition.opacity class="fixed inset-0 bg-slate-900/60 z-40 md:hidden backdrop-blur-sm"></div>
+
+      <!-- SIDEBAR -->
+      <aside :class="isSidebarOpen ? 'translate-x-0' : '-translate-x-full'" class="fixed inset-y-0 left-0 z-50 w-72 bg-white text-slate-800 transform transition-transform duration-300 md:translate-x-0 md:static md:flex md:flex-col shadow-2xl border-r border-slate-100">
+        <div class="p-6 border-b border-slate-100 flex justify-between items-center">
+          <div class="flex items-center gap-3">
+            <!-- LOGO SIDEBAR -->
+            <img :src="logoUrl" alt="Logo" class="h-8 w-auto object-contain">
+            <span class="font-bold text-lg tracking-tight text-slate-900"></span>
+          </div>
+          <button @click="isSidebarOpen = false" class="md:hidden text-slate-400 hover:text-slate-900"><i data-lucide="x"></i></button>
+        </div>
+
+        <nav class="flex-1 overflow-y-auto py-6 px-4 space-y-2">
+          <div class="px-4 text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Main Menu</div>
+          <template x-for="item in [
+            {id:'dashboard', icon:'pie-chart', label:'Dashboard'},
+            {id:'customers', icon:'users', label:'Customers'},
+            {id:'followups', icon:'calendar-check-2', label:'Aktivitas'}
+          ]">
+            <a @click="setView(item.id)" :class="view===item.id || (view==='detail' && item.id==='customers') ? 'bg-accent text-white shadow-lg shadow-accent/20' : 'text-slate-500 hover:bg-slate-50 hover:text-primary'" class="flex items-center px-4 py-3 rounded-xl cursor-pointer transition-all group">
+              <i :data-lucide="item.icon" width="20" class="mr-3 group-hover:scale-110 transition-transform"></i> <span class="font-medium text-sm" x-text="item.label"></span>
+            </a>
+          </template>
+
+          <div class="mt-8 px-4 text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Master Data</div>
+          <a @click="setView('master_products')" :class="view==='master_products' ? 'bg-accent text-white' : 'text-slate-500 hover:bg-slate-50 hover:text-primary'" class="flex items-center px-4 py-3 rounded-xl cursor-pointer transition-all">
+            <i data-lucide="package" width="20" class="mr-3"></i> <span class="font-medium text-sm">Produk</span>
+          </a>
+          
+          <template x-if="['superadmin', 'owner', 'manager'].includes(user?.role)">
+            <div class="space-y-2">
+              <a @click="setView('master_sources')" class="flex items-center px-4 py-3 rounded-xl text-slate-500 hover:bg-slate-50 hover:text-primary cursor-pointer transition-all"><i data-lucide="share-2" width="20" class="mr-3"></i> <span class="font-medium text-sm">Sources</span></a>
+              <a @click="setView('master_divisions')" class="flex items-center px-4 py-3 rounded-xl text-slate-500 hover:bg-slate-50 hover:text-primary cursor-pointer transition-all"><i data-lucide="building" width="20" class="mr-3"></i> <span class="font-medium text-sm">Divisi</span></a>
+              <a @click="setView('users')" class="flex items-center px-4 py-3 rounded-xl text-slate-500 hover:bg-slate-50 hover:text-primary cursor-pointer transition-all"><i data-lucide="user-cog" width="20" class="mr-3"></i> <span class="font-medium text-sm">Users</span></a>
+            </div>
+          </template>
+        </nav>
+
+        <div class="p-4 bg-white border-t border-slate-100">
+          <div class="flex items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100">
+            <div class="w-10 h-10 rounded-full bg-gradient-to-tr from-accent to-blue-400 flex items-center justify-center font-bold text-sm shadow-md text-white" x-text="user?.name.substring(0,2).toUpperCase()"></div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-bold truncate text-slate-900" x-text="user?.name"></p>
+              <p class="text-xs text-slate-500 capitalize truncate" x-text="user?.role"></p>
+            </div>
+            <button @click="logout" class="text-slate-400 hover:text-red-600 transition-colors"><i data-lucide="log-out" width="18"></i></button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- CONTENT AREA -->
+      <main class="flex-1 flex flex-col h-screen overflow-hidden bg-background relative">
+        <!-- Header Mobile -->
+        <header class="md:hidden bg-white/80 backdrop-blur border-b border-slate-200 p-4 flex items-center justify-between sticky top-0 z-30">
+          <button @click="isSidebarOpen = true" class="p-2 text-slate-600 bg-slate-100 rounded-lg"><i data-lucide="menu"></i></button>
+          <span class="font-bold text-slate-800 capitalize" x-text="view.replace('_', ' ')"></span>
+          <div class="w-8"></div>
+        </header>
+
+        <div class="flex-1 overflow-y-auto p-4 md:p-8 pb-24 md:pb-8 scroll-smooth">
+          
+          <!-- DASHBOARD -->
+          <template x-if="view === 'dashboard'">
+            <div class="animate-in space-y-8">
+              <div class="hidden md:block">
+                <h2 class="text-3xl font-extrabold text-slate-900 tracking-tight">Dashboard</h2>
+                <p class="text-slate-500 mt-1">Ringkasan performa hari ini.</p>
+              </div>
+              
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <!-- Card 1 -->
+                <div class="bg-white p-6 rounded-3xl shadow-card border border-slate-100 hover:-translate-y-1 transition-transform duration-300">
+                  <div class="flex justify-between items-start mb-6">
+                    <div class="p-3 bg-blue-50 text-blue-600 rounded-2xl"><i data-lucide="users"></i></div>
+                    <span class="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs font-bold">TOTAL</span>
+                  </div>
+                  <h3 class="text-4xl font-extrabold text-slate-900" x-text="customers.length"></h3>
+                  <p class="text-sm font-medium text-slate-500 mt-2">Customer Terdaftar</p>
+                </div>
+                <!-- Card 2 -->
+                <div class="bg-white p-6 rounded-3xl shadow-card border border-slate-100 hover:-translate-y-1 transition-transform duration-300">
+                  <div class="flex justify-between items-start mb-6">
+                    <div class="p-3 bg-emerald-50 text-emerald-600 rounded-2xl"><i data-lucide="banknote"></i></div>
+                    <span class="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full text-xs font-bold">POTENSI</span>
+                  </div>
+                  <h3 class="text-3xl font-extrabold text-slate-900 truncate" x-text="formatCurrency(getTotalPipelineValue())"></h3>
+                  <p class="text-sm font-medium text-slate-500 mt-2">Pipeline (Produk)</p>
+                </div>
+                <!-- Card 3 -->
+                <div class="bg-white p-6 rounded-3xl shadow-card border border-slate-100 hover:-translate-y-1 transition-transform duration-300">
+                  <div class="flex justify-between items-start mb-6">
+                    <div class="p-3 bg-amber-50 text-amber-600 rounded-2xl"><i data-lucide="clock"></i></div>
+                    <span class="bg-amber-50 text-amber-700 px-3 py-1 rounded-full text-xs font-bold">TASK</span>
+                  </div>
+                  <h3 class="text-4xl font-extrabold text-slate-900" x-text="getPendingTasksCount()"></h3>
+                  <p class="text-sm font-medium text-slate-500 mt-2">Follow-up Pending</p>
+                </div>
+              </div>
+
+              <!-- New Customer Section -->
+              <div class="bg-white rounded-3xl shadow-card border border-slate-100 overflow-hidden">
+                <div class="p-6 border-b border-slate-100 flex justify-between items-center">
+                  <h3 class="text-lg font-bold text-slate-900">Customer Terbaru</h3>
+                  <button @click="setView('customers')" class="text-sm font-semibold text-accent hover:text-blue-700">Lihat Semua</button>
+                </div>
+                <div class="divide-y divide-slate-50">
+                  <template x-for="c in getRecentCustomers()" :key="c.id">
+                    <div @click="selectCustomer(c)" class="p-4 hover:bg-slate-50 transition-colors cursor-pointer flex items-center justify-between group">
+                      <div class="flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold" x-text="c.name.substring(0,2).toUpperCase()"></div>
+                        <div>
+                          <h4 class="font-bold text-slate-900 group-hover:text-accent transition-colors" x-text="c.name"></h4>
+                          <p class="text-xs text-slate-500" x-text="c.company || 'Perorangan'"></p>
+                        </div>
+                      </div>
+                      <div class="flex items-center gap-4">
+                        <span class="px-2.5 py-1 rounded-lg text-xs font-bold uppercase tracking-wider border" :class="getStatusColor(c.status)" x-text="c.status"></span>
+                        <div class="text-right hidden sm:block">
+                          <p class="text-xs text-slate-400 font-medium uppercase tracking-wider">Potensi</p>
+                          <p class="font-bold text-emerald-600" x-text="formatCurrency(calculatePotential(c.products))"></p>
+                        </div>
+                        <i data-lucide="chevron-right" class="text-slate-300 group-hover:text-accent transition-colors" width="18"></i>
+                      </div>
+                    </div>
+                  </template>
+                  <div x-show="getRecentCustomers().length === 0" class="p-8 text-center text-slate-400 text-sm">Belum ada data customer.</div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- CUSTOMERS -->
+          <template x-if="view === 'customers'">
+            <div class="animate-in space-y-6">
+              <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                  <h2 class="text-2xl font-bold text-slate-900">Customers</h2>
+                  <p class="text-sm text-slate-500 mt-1">Kelola data pelanggan dan prospek.</p>
+                </div>
+                <button @click="openModal('customer')" class="bg-primary text-white px-5 py-3 rounded-xl font-bold text-sm shadow-lg hover:bg-slate-800 transition-all flex items-center gap-2">
+                  <i data-lucide="plus" width="18"></i> Customer Baru
+                </button>
+              </div>
+
+              <!-- Filter Bar -->
+              <div class="flex gap-3">
+                <div class="relative flex-1">
+                  <i data-lucide="search" width="18" class="absolute left-4 top-3.5 text-slate-400"></i>
+                  <input type="text" x-model="filters.search" class="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-accent outline-none shadow-sm" placeholder="Cari nama, perusahaan...">
+                </div>
+                <button @click="showFilterModal=true" class="bg-white border border-slate-200 px-4 rounded-xl text-slate-600 hover:bg-slate-50 shadow-sm relative">
+                  <i data-lucide="filter" width="20"></i>
+                  <span x-show="getActiveFiltersCount() > 0" class="absolute top-2 right-2 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></span>
+                </button>
+              </div>
+
+              <!-- Customer Grid -->
+              <div class="grid grid-cols-1 gap-4">
+                <template x-for="c in getFilteredCustomers()" :key="c.id">
+                  <div @click="selectCustomer(c)" class="group bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-lg hover:border-accent/30 cursor-pointer transition-all relative overflow-hidden">
+                    <div class="absolute left-0 top-0 bottom-0 w-1.5 transition-colors" :class="{
+                      'bg-slate-300': c.status === 'New', 'bg-blue-500': c.status === 'Cold',
+                      'bg-amber-500': c.status === 'Warm', 'bg-red-500': c.status === 'Hot', 'bg-emerald-500': c.status === 'Deal'
+                    }"></div>
+                    
+                    <div class="pl-4">
+                      <div class="flex justify-between items-start mb-3">
+                        <div>
+                          <h3 class="font-bold text-lg text-slate-900 group-hover:text-accent transition-colors" x-text="c.name"></h3>
+                          <div class="flex items-center gap-2 text-sm text-slate-500 mt-1">
+                            <i data-lucide="building-2" width="14"></i> <span x-text="c.company || 'Perorangan'"></span>
+                          </div>
+                        </div>
+                        <span class="px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-wider bg-slate-100 text-slate-600" x-text="c.status"></span>
+                      </div>
+                      
+                      <div class="flex items-end justify-between border-t border-slate-100 pt-4 mt-2">
+                        <div>
+                          <p class="text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Potensi Deal</p>
+                          <p class="text-xl font-extrabold text-emerald-600" x-text="formatCurrency(calculatePotential(c.products))"></p>
+                        </div>
+                        <div class="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity translate-y-2 group-hover:translate-y-0">
+                          <button @click.stop="openModal('customer', c)" class="p-2 bg-slate-50 text-slate-500 hover:bg-accent hover:text-white rounded-lg transition-colors"><i data-lucide="pencil" width="16"></i></button>
+                          <button @click.stop="deleteItem('customer', c.id)" class="p-2 bg-slate-50 text-slate-500 hover:bg-red-500 hover:text-white rounded-lg transition-colors"><i data-lucide="trash-2" width="16"></i></button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <div x-show="getFilteredCustomers().length===0" class="py-16 text-center border-2 border-dashed border-slate-200 rounded-2xl">
+                  <p class="text-slate-400 font-medium">Tidak ada data ditemukan</p>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- CUSTOMER DETAIL -->
+          <template x-if="view === 'detail' && selectedCustomer">
+            <div class="animate-in space-y-6">
+              <!-- Header -->
+              <div class="flex items-center gap-4 bg-white/80 backdrop-blur sticky top-0 z-10 py-2">
+                <button @click="view='customers'" class="p-3 hover:bg-white hover:shadow rounded-xl text-slate-600 transition-all"><i data-lucide="arrow-left"></i></button>
+                <div class="flex-1 min-w-0">
+                  <h2 class="text-2xl font-bold truncate text-slate-900" x-text="selectedCustomer.name"></h2>
+                  <p class="text-sm text-slate-500" x-text="selectedCustomer.company || 'Perorangan'"></p>
+                </div>
+                <div class="px-4 py-2 rounded-xl font-bold text-sm bg-slate-100 text-slate-700" x-text="selectedCustomer.status"></div>
+              </div>
+
+              <!-- Financial Card -->
+              <div class="bg-primary text-white p-8 rounded-[2rem] shadow-xl relative overflow-hidden">
+                <div class="absolute top-0 right-0 p-10 opacity-5 pointer-events-none"><i data-lucide="trending-up" width="150" height="150"></i></div>
+                <div class="relative z-10">
+                  <p class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1">Total Potensi</p>
+                  <h3 class="text-5xl font-bold text-emerald-400 mb-8" x-text="formatCurrency(calculatePotential(selectedCustomer.products))"></h3>
+                  
+                  <div class="grid grid-cols-2 gap-8 border-t border-slate-700 pt-6">
+                    <div>
+                      <p class="text-slate-400 text-xs uppercase mb-1">Dana Ready</p>
+                      <p class="text-xl font-semibold" x-text="formatCurrency(selectedCustomer.estimation_value)"></p>
+                    </div>
+                    <div>
+                      <p class="text-slate-400 text-xs uppercase mb-1">Divisi</p>
+                      <p class="text-xl font-semibold" x-text="metaData.divisions.find(d=>d.id==selectedCustomer.division_id)?.name || '-'"></p>
+                    </div>
+                  </div>
+                  
+                  <button @click="openModal('interaction')" class="w-full mt-8 bg-white text-primary font-bold py-4 rounded-xl hover:bg-slate-50 transition-colors flex items-center justify-center gap-2">
+                    <i data-lucide="plus-circle" width="20"></i> Tambah Aktivitas
+                  </button>
+                </div>
+              </div>
+
+              <!-- Info & Timeline Grid -->
+              <div class="grid md:grid-cols-2 gap-6">
+                <!-- Info -->
+                <div class="space-y-6">
+                  <div class="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+                    <h4 class="font-bold text-lg mb-4 flex items-center gap-2 text-slate-800"><i data-lucide="user" class="text-accent"></i> Kontak</h4>
+                    <div class="space-y-4">
+                      <div><label class="text-xs font-bold text-slate-400 uppercase">Email</label><p class="font-medium text-slate-700" x-text="selectedCustomer.email"></p></div>
+                      <div><label class="text-xs font-bold text-slate-400 uppercase">Telepon</label><p class="font-medium text-slate-700" x-text="selectedCustomer.phone"></p></div>
+                      <div><label class="text-xs font-bold text-slate-400 uppercase">Alamat</label><p class="font-medium text-slate-700" x-text="selectedCustomer.address || '-'"></p></div>
+                      <div><label class="text-xs font-bold text-slate-400 uppercase">Catatan</label><p class="bg-slate-50 p-3 rounded-xl text-sm text-slate-600 mt-1" x-text="selectedCustomer.description || '-'"></p></div>
+                    </div>
+                  </div>
+                  
+                  <div class="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+                    <h4 class="font-bold text-lg mb-4 flex items-center gap-2 text-slate-800"><i data-lucide="package" class="text-accent"></i> Produk</h4>
+                    <div class="space-y-2">
+                      <template x-for="pid in (selectedCustomer.products||[])">
+                        <div class="flex justify-between p-3 border rounded-xl bg-slate-50/50">
+                          <span class="font-medium text-sm" x-text="metaData.products.find(p=>p.id==pid)?.name"></span>
+                          <span class="font-bold text-sm text-emerald-600" x-text="formatCurrency(metaData.products.find(p=>p.id==pid)?.price)"></span>
+                        </div>
+                      </template>
+                      <div x-show="!selectedCustomer.products?.length" class="text-slate-400 text-sm italic">Kosong</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Timeline -->
+                <div class="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm h-fit">
+                  <h4 class="font-bold text-lg mb-6 flex items-center gap-2 text-slate-800"><i data-lucide="history" class="text-accent"></i> Riwayat</h4>
+                  <div class="relative border-l-2 border-slate-100 ml-3 space-y-8 pb-2">
+                    <template x-for="i in getCurrentInteractions()" :key="i.id">
+                      <div class="relative ml-8">
+                        <div class="absolute -left-[39px] top-0 h-9 w-9 rounded-full flex items-center justify-center ring-4 ring-white bg-slate-100 text-slate-500">
+                          <i :data-lucide="i.type==='call'?'phone':(i.type==='whatsapp'?'message-circle':'users')" width="16"></i>
+                        </div>
+                        <div class="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                          <div class="flex justify-between mb-2">
+                            <span class="text-xs font-bold uppercase text-slate-500" x-text="formatDate(i.due_date)"></span>
+                            <span class="text-[10px] font-bold px-2 py-0.5 rounded uppercase" :class="i.status==='done'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'" x-text="i.status"></span>
+                          </div>
+                          <p class="text-sm text-slate-700 leading-relaxed" x-text="i.notes"></p>
+                        </div>
+                      </div>
+                    </template>
+                    <div x-show="getCurrentInteractions().length===0" class="text-slate-400 text-sm ml-6">Belum ada interaksi.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- FOLLOW UPS -->
+          <template x-if="view === 'followups'">
+            <div class="animate-in space-y-6">
+              <h2 class="text-2xl font-bold text-slate-900">Aktivitas & Tugas</h2>
+              <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                <template x-for="task in getAllTasks()" :key="task.id">
+                  <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col h-full relative overflow-hidden group hover:shadow-md transition-all" 
+                       :class="task.status === 'done' ? 'opacity-75 grayscale-[0.3]' : ''">
+                    <div class="absolute left-0 top-0 bottom-0 w-1.5" :class="task.status==='done'?'bg-emerald-500':'bg-amber-500'"></div>
+                    <div class="pl-4 mb-4 flex gap-3">
+                       <div class="p-3 rounded-xl bg-slate-50 h-fit"><i :data-lucide="task.status==='done'?'check-circle':'clock'" width="20" :class="task.status==='done'?'text-emerald-600':'text-amber-600'"></i></div>
+                       <div>
+                          <h4 class="font-bold text-slate-900 line-clamp-1" x-text="task.customer_name"></h4>
+                          <div class="text-xs font-medium text-slate-500 mt-1 flex gap-2">
+                             <span x-text="formatDate(task.due_date)"></span> • <span class="capitalize" x-text="task.type"></span>
+                          </div>
+                       </div>
+                    </div>
+                    <div class="pl-4 flex-1">
+                       <p class="bg-slate-50 p-3 rounded-xl text-sm text-slate-600 italic border border-slate-100" x-text="'&quot;'+task.notes+'&quot;'"></p>
+                    </div>
+                    <div class="pl-4 mt-4" x-show="task.status==='pending'">
+                       <button @click="markDone(task.id)" class="w-full py-2.5 rounded-xl border border-emerald-200 text-emerald-600 hover:bg-emerald-50 font-bold text-sm flex justify-center gap-2"><i data-lucide="check" width="16"></i> Selesai</button>
+                    </div>
+                  </div>
+                </template>
+                <div x-show="getAllTasks().length===0" class="col-span-full py-16 text-center text-slate-400 bg-slate-50 rounded-2xl border-2 border-dashed">Belum ada aktivitas.</div>
+              </div>
+            </div>
+          </template>
+
+          <!-- MASTER DATA & USERS -->
+          <template x-if="view.startsWith('master_') || view === 'users'">
+            <div class="animate-in space-y-6">
+              <div class="flex justify-between items-center">
+                <h2 class="text-2xl font-bold text-slate-900 capitalize" x-text="view.replace('master_','').replace('users','User Management')"></h2>
+                <button @click="openModal(view==='users'?'user':view.replace('master_','').slice(0,-1))" class="bg-primary text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow hover:bg-slate-800 transition-all flex items-center gap-2"><i data-lucide="plus" width="18"></i> Tambah</button>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <template x-for="item in getMasterList()" :key="item.id">
+                  <div class="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-all group relative overflow-hidden">
+                    <div class="flex justify-between items-start">
+                      <div>
+                        <h3 class="font-bold text-lg text-slate-900" x-text="item.name"></h3>
+                        <p class="text-sm text-slate-500 mt-1" x-text="item.description || item.email || '-'"></p>
+                        <template x-if="view==='master_products'"><div class="mt-3 inline-block bg-blue-50 text-blue-700 px-3 py-1 rounded-lg text-sm font-bold" x-text="formatCurrency(item.price)"></div></template>
+                      </div>
+                      <div class="flex gap-2 opacity-0 group-hover:opacity-100 transition-all translate-x-4 group-hover:translate-x-0">
+                        <button @click="openModal(view==='users'?'user':view.replace('master_','').slice(0,-1), item)" class="p-2 bg-slate-50 rounded-lg hover:text-accent"><i data-lucide="pencil" width="16"></i></button>
+                        <button @click="deleteItem(view==='users'?'user':view.replace('master_','').slice(0,-1), item.id)" class="p-2 bg-slate-50 rounded-lg hover:text-danger"><i data-lucide="trash-2" width="16"></i></button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+        </div>
+      </main>
+    </div>
+  </template>
+
+  <!-- FORM MODAL -->
+  <div x-show="showFormModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm" x-cloak x-transition.opacity>
+    <div class="bg-white w-full max-w-lg rounded-[2rem] shadow-2xl max-h-[90vh] flex flex-col" @click.away="showFormModal=false">
+      <div class="p-6 border-b border-slate-100 flex justify-between items-center shrink-0">
+        <div><h3 class="font-bold text-xl text-slate-900" x-text="(formMode==='edit'?'Edit ':'Tambah ')+formType.toUpperCase()"></h3></div>
+        <button @click="showFormModal=false" class="bg-slate-50 p-2 rounded-full hover:bg-slate-100 text-slate-500"><i data-lucide="x" width="20"></i></button>
+      </div>
+      <div class="p-6 overflow-y-auto scroll-smooth">
+        <form @submit.prevent="submitForm">
+          
+          <template x-if="formType === 'customer'">
+            <div class="space-y-5">
+              <div class="grid grid-cols-2 gap-4">
+                <input x-model="formData.name" placeholder="Nama Customer *" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required>
+                <input x-model="formData.company" placeholder="Perusahaan" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none">
+              </div>
+              <input x-model="formData.email" placeholder="Email *" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required>
+              <input x-model="formData.phone" placeholder="Telepon *" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required>
+              <div class="grid grid-cols-2 gap-4">
+                <select x-model="formData.status" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm"><option value="New">New</option><option value="Cold">Cold</option><option value="Warm">Warm</option><option value="Hot">Hot</option><option value="Deal">Deal</option></select>
+                <select x-model="formData.source_id" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm"><template x-for="s in metaData.sources" :key="s.id"><option :value="s.id" x-text="s.name"></option></template></select>
+              </div>
+              <div class="bg-slate-50 p-4 rounded-xl border border-slate-100">
+                <label class="text-xs font-bold text-slate-500 uppercase mb-3 block">Produk Diminati</label>
+                <div class="grid grid-cols-1 gap-2 max-h-40 overflow-y-auto">
+                  <template x-for="p in metaData.products" :key="p.id">
+                    <label class="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-accent" :class="formData.products?.includes(p.id)?'ring-1 ring-accent border-accent':''">
+                      <input type="checkbox" :value="p.id" x-model="formData.products" class="w-4 h-4 text-accent rounded">
+                      <div class="flex-1 flex justify-between"><span class="text-sm font-semibold" x-text="p.name"></span><span class="text-xs font-bold text-emerald-600" x-text="formatCurrency(p.price)"></span></div>
+                    </label>
+                  </template>
+                </div>
+              </div>
+              <input type="number" x-model="formData.estimation_value" placeholder="Dana Ready (Rp)" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-900 focus:ring-2 focus:ring-accent outline-none">
+              <textarea x-model="formData.description" placeholder="Catatan..." class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none h-24 resize-none"></textarea>
+            </div>
+          </template>
+
+          <template x-if="formType === 'interaction'">
+            <div class="space-y-6">
+              <div class="bg-blue-50/50 p-4 rounded-2xl border border-blue-100 flex items-center gap-4">
+                <div class="w-12 h-12 rounded-full bg-white flex items-center justify-center text-accent shadow-sm"><i data-lucide="user" width="24"></i></div>
+                <div><p class="text-xs font-bold text-blue-500 uppercase">Interaksi Dengan</p><p class="font-bold text-slate-900 text-lg" x-text="selectedCustomer?.name"></p></div>
+              </div>
+              <div>
+                <label class="text-xs font-bold text-slate-500 uppercase mb-2 block">Metode</label>
+                <div class="grid grid-cols-2 gap-3">
+                  <template x-for="t in [{id:'call',label:'Telepon',icon:'phone'},{id:'whatsapp',label:'WhatsApp',icon:'message-circle'},{id:'meeting',label:'Meeting',icon:'users'},{id:'email',label:'Email',icon:'mail'}]">
+                    <button type="button" @click="formData.type=t.id" class="flex items-center gap-3 p-3.5 border rounded-2xl transition-all text-left" :class="formData.type===t.id?'border-accent ring-1 ring-accent bg-blue-50/30':'border-slate-200 bg-white'">
+                      <i :data-lucide="t.icon" width="20" class="text-slate-600"></i> <span class="text-sm font-bold text-slate-700" x-text="t.label"></span>
+                    </button>
+                  </template>
+                </div>
+              </div>
+              <div class="grid grid-cols-1 gap-4">
+                <div class="bg-slate-100 p-1.5 rounded-xl flex"><button type="button" @click="formData.status='pending'" class="flex-1 py-2.5 text-sm font-bold rounded-lg transition-all" :class="formData.status==='pending'?'bg-white shadow text-slate-900':'text-slate-500'">Pending</button><button type="button" @click="formData.status='done'" class="flex-1 py-2.5 text-sm font-bold rounded-lg transition-all" :class="formData.status==='done'?'bg-white shadow text-emerald-600':'text-slate-500'">Selesai</button></div>
+                <div class="relative"><i data-lucide="calendar" width="18" class="absolute left-4 top-3.5 text-slate-400"></i><input type="date" x-model="formData.due_date" class="w-full pl-11 pr-4 py-3 border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-accent outline-none"></div>
+              </div>
+              <div><label class="text-xs font-bold text-slate-500 uppercase mb-2 block">Hasil / Catatan</label><textarea x-model="formData.notes" placeholder="Tulis hasil interaksi..." class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none h-32 resize-none" required></textarea></div>
+            </div>
+          </template>
+
+          <template x-if="formType === 'product'">
+            <div class="space-y-5">
+              <input x-model="formData.name" placeholder="Nama Produk" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required>
+              <input x-model="formData.description" placeholder="Deskripsi" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none">
+              <div class="grid grid-cols-2 gap-4"><input type="number" x-model="formData.price" placeholder="Harga" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required><input type="number" x-model="formData.stock" placeholder="Stok" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required></div>
+            </div>
+          </template>
+
+          <template x-if="['user','source','division'].includes(formType)">
+             <div class="space-y-5">
+                <input x-model="formData.name" placeholder="Nama" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required>
+                <template x-if="formType==='user'">
+                   <div class="space-y-4">
+                      <input type="email" x-model="formData.email" placeholder="Email" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none">
+                      <input type="password" x-model="formData.password" placeholder="Password" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none">
+                      <select x-model="formData.role" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm"><option value="marketing">Marketing</option><option value="spv">SPV</option><option value="manager">Manager</option><option value="owner">Owner</option><option value="superadmin">Super Admin</option></select>
+                      <select x-model="formData.division_id" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm"><option value="">Pilih Divisi</option><template x-for="d in metaData.divisions" :key="d.id"><option :value="d.id" x-text="d.name"></option></template></select>
+                   </div>
+                </template>
+             </div>
+          </template>
+
+          <button type="submit" class="w-full bg-primary text-white font-bold py-4 rounded-xl mt-8 shadow-lg shadow-primary/20 hover:bg-slate-800 transition-transform active:scale-[0.98]">Simpan Data</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- FILTER MODAL -->
+  <div x-show="showFilterModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" x-cloak x-transition.opacity>
+    <div class="bg-white w-full max-w-md rounded-[2rem] shadow-2xl overflow-hidden" @click.away="showFilterModal=false">
+      <div class="p-5 border-b border-slate-100 flex justify-between items-center"><h3 class="font-bold text-lg">Filter</h3><button @click="showFilterModal=false"><i data-lucide="x"></i></button></div>
+      <div class="p-6 space-y-5">
+         <div class="grid grid-cols-2 gap-3">
+            <div><label class="text-xs font-bold text-slate-400">Dari</label><input type="date" x-model="filters.startDate" class="w-full border rounded-xl p-2 text-sm"></div>
+            <div><label class="text-xs font-bold text-slate-400">Sampai</label><input type="date" x-model="filters.endDate" class="w-full border rounded-xl p-2 text-sm"></div>
+         </div>
+         <select x-model="filters.status" class="w-full border p-3 rounded-xl text-sm bg-white"><option value="">Semua Status</option><option value="New">New</option><option value="Cold">Cold</option><option value="Hot">Hot</option></select>
+         <div class="flex gap-3 pt-4"><button @click="resetFilters" class="flex-1 py-3 rounded-xl font-bold text-slate-500 hover:bg-slate-50">Reset</button><button @click="showFilterModal=false" class="flex-1 bg-primary text-white py-3 rounded-xl font-bold shadow-lg">Terapkan</button></div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
