@@ -224,27 +224,35 @@
            this.loginForm = {email:'', password:''}; 
         },
 
-        // DATA LOADING (PARALLEL FETCHING)
+        // DATA LOADING (REVERT TO SEQUENTIAL UNTUK STABILITAS)
         async loadData() {
           this.isLoading = true;
           try {
              if(!API_URL) { this.loadDummyData(); return; }
 
-             const [meta, cust, interact] = await Promise.all([
-                this.callApi('getMetaData'),
-                this.callApi('getCustomers', { userId: this.user.id }),
-                this.callApi('getInteractions', { userId: this.user.id })
-             ]);
-
+             // Ambil Meta Data
+             const meta = await this.callApi('getMetaData');
              this.metaData = meta;
-             this.customers = cust;
-             this.interactions = interact;
+
+             // Ambil Customers (Sequential agar GAS tidak overload)
+             const cust = await this.callApi('getCustomers', { userId: this.user.id });
+             this.customers = cust || [];
+
+             // Ambil Interactions
+             const interact = await this.callApi('getInteractions', { userId: this.user.id });
+             this.interactions = interact || [];
 
              setTimeout(() => lucide.createIcons(), 50);
 
           } catch (err) {
              console.error(err);
-             Swal.fire('Gagal Memuat Data', 'Koneksi lambat atau terjadi kesalahan: ' + err.message, 'error');
+             // Jika error karena user tidak valid (misal sisa session demo), auto logout
+             if(err.message.includes("User tidak dikenali") || err.message.includes("Akses Ditolak")) {
+                 Swal.fire('Sesi Berakhir', 'Data akun tidak dikenali di database. Silakan login ulang.', 'warning')
+                     .then(() => this.logout());
+             } else {
+                 Swal.fire('Gagal Memuat Data', 'Koneksi lambat atau terjadi kesalahan jaringan. Coba refresh.', 'error');
+             }
           } finally {
              this.isLoading = false;
           }
@@ -394,6 +402,7 @@
 
         // GETTERS
         getFilteredCustomers() {
+           if (!Array.isArray(this.customers)) return []; // Safety Check
            return this.customers.filter(c => {
               const f = this.filters;
               const searchLower = f.search.toLowerCase();
@@ -630,6 +639,71 @@
                     </div>
                   </template>
                   <div x-show="getRecentCustomers().length === 0" class="p-8 text-center text-slate-400 text-sm">Belum ada data customer.</div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- CUSTOMERS -->
+          <template x-if="view === 'customers'">
+            <div class="animate-in space-y-6">
+              <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                  <h2 class="text-2xl font-bold text-slate-900">Customers</h2>
+                  <p class="text-sm text-slate-500 mt-1">Kelola data pelanggan dan prospek.</p>
+                </div>
+                <button @click="openModal('customer')" class="bg-primary text-white px-5 py-3 rounded-xl font-bold text-sm shadow-lg hover:bg-slate-800 transition-all flex items-center gap-2">
+                  <i data-lucide="plus" width="18"></i> Customer Baru
+                </button>
+              </div>
+
+              <!-- Filter Bar -->
+              <div class="flex gap-3">
+                <div class="relative flex-1">
+                  <i data-lucide="search" width="18" class="absolute left-4 top-3.5 text-slate-400"></i>
+                  <input type="text" x-model="filters.search" class="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-base focus:ring-2 focus:ring-accent outline-none shadow-sm" placeholder="Cari nama, perusahaan...">
+                </div>
+                <button @click="showFilterModal=true" class="bg-white border border-slate-200 px-4 rounded-xl text-slate-600 hover:bg-slate-50 shadow-sm relative">
+                  <i data-lucide="filter" width="20"></i>
+                  <span x-show="getActiveFiltersCount() > 0" class="absolute top-2 right-2 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></span>
+                </button>
+              </div>
+
+              <!-- Customer Grid -->
+              <div class="grid grid-cols-1 gap-4">
+                <template x-for="c in getFilteredCustomers()" :key="c.id">
+                  <div @click="selectCustomer(c)" class="group bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-lg hover:border-accent/30 cursor-pointer transition-all relative overflow-hidden">
+                    <div class="absolute left-0 top-0 bottom-0 w-1.5 transition-colors" :class="{
+                      'bg-slate-300': c.status === 'New', 'bg-blue-500': c.status === 'Cold',
+                      'bg-amber-500': c.status === 'Warm', 'bg-red-500': c.status === 'Hot', 'bg-emerald-500': c.status === 'Deal'
+                    }"></div>
+                    
+                    <div class="pl-4">
+                      <div class="flex justify-between items-start mb-3">
+                        <div>
+                          <h3 class="font-bold text-lg text-slate-900 group-hover:text-accent transition-colors" x-text="c.name"></h3>
+                          <div class="flex items-center gap-2 text-sm text-slate-500 mt-1">
+                            <i data-lucide="building-2" width="14"></i> <span x-text="c.company || 'Perorangan'"></span>
+                          </div>
+                        </div>
+                        <span class="px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-wider bg-slate-100 text-slate-600" x-text="c.status"></span>
+                      </div>
+                      
+                      <div class="flex items-end justify-between border-t border-slate-100 pt-4 mt-2">
+                        <div>
+                          <p class="text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Potensi Deal</p>
+                          <p class="text-xl font-extrabold text-emerald-600" x-text="formatCurrency(calculatePotential(c.products))"></p>
+                        </div>
+                        <div class="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity translate-y-2 group-hover:translate-y-0">
+                          <button @click.stop="openModal('customer', c)" class="p-2 bg-slate-50 text-slate-500 hover:bg-accent hover:text-white rounded-lg transition-colors"><i data-lucide="pencil" width="16"></i></button>
+                          <button @click.stop="deleteItem('customer', c.id)" class="p-2 bg-slate-50 text-slate-500 hover:bg-red-500 hover:text-white rounded-lg transition-colors"><i data-lucide="trash-2" width="16"></i></button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <div x-show="getFilteredCustomers().length===0" class="py-16 text-center border-2 border-dashed border-slate-200 rounded-2xl">
+                  <p class="text-slate-400 font-medium">Tidak ada data ditemukan</p>
                 </div>
               </div>
             </div>
@@ -891,6 +965,21 @@
 
           <button type="submit" class="w-full bg-primary text-white font-bold py-4 rounded-xl mt-8 shadow-lg shadow-primary/20 hover:bg-slate-800 transition-transform active:scale-[0.98]">Simpan Data</button>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- FILTER MODAL -->
+  <div x-show="showFilterModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" x-cloak x-transition.opacity>
+    <div class="bg-white w-full max-w-md rounded-[2rem] shadow-2xl overflow-hidden" @click.away="showFilterModal=false">
+      <div class="p-5 border-b border-slate-100 flex justify-between items-center"><h3 class="font-bold text-lg">Filter</h3><button @click="showFilterModal=false"><i data-lucide="x"></i></button></div>
+      <div class="p-6 space-y-5">
+         <div class="grid grid-cols-2 gap-3">
+            <div><label class="text-xs font-bold text-slate-400">Dari</label><input type="date" x-model="filters.startDate" class="w-full border rounded-xl p-2 text-base"></div>
+            <div><label class="text-xs font-bold text-slate-400">Sampai</label><input type="date" x-model="filters.endDate" class="w-full border rounded-xl p-2 text-base"></div>
+         </div>
+         <select x-model="filters.status" class="w-full border p-3 rounded-xl text-base bg-white"><option value="">Semua Status</option><option value="New">New</option><option value="Cold">Cold</option><option value="Hot">Hot</option></select>
+         <div class="flex gap-3 pt-4"><button @click="resetFilters" class="flex-1 py-3 rounded-xl font-bold text-slate-500 hover:bg-slate-50">Reset</button><button @click="showFilterModal=false" class="flex-1 bg-primary text-white py-3 rounded-xl font-bold shadow-lg">Terapkan</button></div>
       </div>
     </div>
   </div>
