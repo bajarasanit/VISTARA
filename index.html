@@ -2,13 +2,19 @@
 <html lang="id">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Master Plan CRM (Clean Light UI)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Master Plan CRM (PWA)</title>
+  
+  <!-- PWA Manifest Placeholder -->
+  <link id="manifest-link" rel="manifest" href="" />
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- Font: Plus Jakarta Sans (Modern Geometric Sans) -->
+  <!-- Font: Plus Jakarta Sans -->
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   
   <!-- Lucide Icons -->
@@ -17,10 +23,27 @@
   <!-- SweetAlert2 -->
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
+  <!-- STYLE TAMBAHAN UNTUK MOBILE -->
+  <style>
+    /* Safe Area untuk iPhone X ke atas */
+    .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+    .pt-safe { padding-top: env(safe-area-inset-top); }
+    
+    /* Mencegah pull-to-refresh di mobile agar terasa seperti Native App */
+    body { overscroll-behavior-y: none; }
+    
+    /* Hide scrollbar tapi tetap bisa scroll */
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+    [x-cloak] { display: none !important; }
+    .animate-in { animation: fadeIn 0.4s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+
   <!-- LOGIKA APLIKASI -->
   <script>
     // --- KONFIGURASI API ---
-    // URL Backend Google Apps Script Anda
     const API_URL = "https://script.google.com/macros/s/AKfycbytc3Noq6GiuKtqkwoibCUcBQO7S7NF4A46lnCESzG8w_Z5rifp38m8Qab8bgIgH90W/exec"; 
 
     tailwind.config = {
@@ -42,12 +65,34 @@
       }
     }
 
+    // --- PWA MANIFEST GENERATOR ---
+    function initPWA() {
+      const manifest = {
+        "name": "Master Plan CRM",
+        "short_name": "CRM Pro",
+        "start_url": ".",
+        "display": "standalone",
+        "background_color": "#f8fafc",
+        "theme_color": "#0f172a",
+        "orientation": "portrait-primary",
+        "icons": [
+          { "src": "https://placehold.co/192x192/0f172a/ffffff?text=CRM", "sizes": "192x192", "type": "image/png" },
+          { "src": "https://placehold.co/512x512/0f172a/ffffff?text=CRM", "sizes": "512x512", "type": "image/png" }
+        ]
+      };
+      const stringManifest = JSON.stringify(manifest);
+      const blob = new Blob([stringManifest], {type: 'application/json'});
+      const manifestURL = URL.createObjectURL(blob);
+      document.querySelector('#manifest-link').setAttribute('href', manifestURL);
+    }
+
     function crmApp() {
       return {
         // STATE
         view: 'login',
         isLoading: false,
         isSidebarOpen: false,
+        installPrompt: null, // Untuk menyimpan event PWA install
         user: null,
         
         logoUrl: 'https://i.imgur.com/8NYnTJx.png',
@@ -63,11 +108,45 @@
         filters: { search: '', status: '', minDana: '', maxDana: '', division_id: '', createdBy: '', startDate: '', endDate: '' },
 
         init() {
+          // Init PWA Manifest
+          initPWA();
+
+          // Listen for PWA Install Event
+          window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            this.installPrompt = e;
+            console.log("PWA Install Ready");
+          });
+
           this.$watch('view', () => { 
              setTimeout(() => lucide.createIcons(), 50); 
              window.scrollTo(0,0);
           });
           this.$watch('showFormModal', (v) => v && setTimeout(() => lucide.createIcons(), 100));
+
+          // --- AUTO LOGIN (FIX SESSION) ---
+          const savedUser = localStorage.getItem('crm_user_session');
+          if (savedUser) {
+             try {
+                this.user = JSON.parse(savedUser);
+                this.loadData();
+                this.view = 'dashboard';
+                console.log("Auto login success");
+             } catch(e) {
+                console.error("Session invalid", e);
+                localStorage.removeItem('crm_user_session');
+             }
+          }
+        },
+
+        // --- PWA ACTION ---
+        async installPWA() {
+          if (!this.installPrompt) return;
+          this.installPrompt.prompt();
+          const { outcome } = await this.installPrompt.userChoice;
+          if (outcome === 'accepted') {
+            this.installPrompt = null;
+          }
         },
 
         // --- API HELPER ---
@@ -106,6 +185,10 @@
             setTimeout(() => {
               let role = this.loginForm.email.includes('admin') ? 'superadmin' : 'marketing';
               this.user = { id: 'u_sim', name: 'User Demo', role: role, division_id: 'div_1' };
+              
+              // SIMPAN SESI KE LOCALSTORAGE
+              localStorage.setItem('crm_user_session', JSON.stringify(this.user));
+              
               this.loadDummyData();
               this.view = 'dashboard';
               this.isLoading = false;
@@ -118,7 +201,11 @@
                email: this.loginForm.email, 
                password: this.loginForm.password 
             });
-            this.user = res.user; 
+            this.user = res.user;
+            
+            // SIMPAN SESI KE LOCALSTORAGE (PERSIST LOGIN)
+            localStorage.setItem('crm_user_session', JSON.stringify(this.user));
+            
             await this.loadData();
             this.view = 'dashboard';
           } catch (err) {
@@ -128,9 +215,16 @@
           }
         },
 
-        logout() { this.user = null; this.view = 'login'; this.loginForm = {email:'', password:''}; },
+        logout() { 
+           // HAPUS SESI DARI LOCALSTORAGE
+           localStorage.removeItem('crm_user_session');
+           
+           this.user = null; 
+           this.view = 'login'; 
+           this.loginForm = {email:'', password:''}; 
+        },
 
-        // DATA LOADING
+        // DATA LOADING (PARALLEL FETCHING)
         async loadData() {
           this.isLoading = true;
           try {
@@ -185,7 +279,6 @@
         getMetaName(type, id) { return this.metaData[type]?.find(x => x.id == id)?.name || '-'; },
         getMetaPrice(id) { return this.metaData.products?.find(p => p.id == id)?.price || 0; },
         
-        // --- LOGIKA RBAC USER CREATION ---
         getAvailableRoles() {
           const r = this.user?.role;
           if(r === 'superadmin') return [
@@ -216,10 +309,8 @@
              if(type==='customer') this.formData = {status:'New', products:[], division_id: this.user.division_id, source_id: this.metaData.sources[0]?.id};
              if(type==='interaction') this.formData = {type:'call', status:'pending', due_date: new Date().toISOString().split('T')[0]};
              if(type==='user') {
-                 // Default role pertama dari list yang tersedia
                  const roles = this.getAvailableRoles();
                  this.formData = {role: roles.length > 0 ? roles[roles.length-1].id : 'marketing'};
-                 // Auto-lock divisi untuk Manager & SPV
                  if(['manager', 'spv'].includes(this.user.role)) {
                     this.formData.division_id = this.user.division_id;
                  }
@@ -230,7 +321,6 @@
         async submitForm() {
           this.isLoading = true;
           let d = this.formData;
-          // Logic Assign ID otomatis untuk Marketing
           if (this.formType === 'customer' && this.formMode === 'add' && this.user.role === 'marketing') { 
               d.created_by = this.user.id; d.assigned_to = this.user.id; d.division_id = this.user.division_id; 
           }
@@ -240,7 +330,6 @@
 
           try {
              if(!API_URL) {
-                 // Fallback Simulasi
                  setTimeout(() => {
                     if(this.formType==='customer' && this.formMode==='add') this.customers.unshift({...d, id:Date.now()});
                     if(this.formType==='interaction') this.interactions.push({...d, id:Date.now()});
@@ -330,10 +419,8 @@
            const v = this.view; 
            if(v.includes('products')) return this.metaData.products; 
            
-           // FILTER USER MANAGEMENT BERDASARKAN DIVISI
            if(v.includes('users')) {
                let u = this.metaData.users;
-               // Manager & SPV hanya melihat user di divisinya
                if(['manager', 'spv'].includes(this.user.role)) {
                    return u.filter(x => String(x.division_id) === String(this.user.division_id));
                }
@@ -365,11 +452,6 @@
   </script>
   
   <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
-  <style>
-    [x-cloak] { display: none !important; }
-    .animate-in { animation: fadeIn 0.4s ease-out; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-  </style>
 </head>
 
 <body class="bg-background text-slate-800 font-sans pb-safe antialiased" x-data="crmApp()">
@@ -394,8 +476,8 @@
         <p class="text-center text-slate-500 text-sm mb-8">Masuk untuk mengelola penjualan.</p>
         
         <form @submit.prevent="login" class="space-y-5">
-          <input type="email" x-model="loginForm.email" class="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-accent outline-none text-sm font-medium" placeholder="Email Address" required>
-          <input type="password" x-model="loginForm.password" class="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-accent outline-none text-sm font-medium" placeholder="Password" required>
+          <input type="email" x-model="loginForm.email" class="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-accent outline-none text-base font-medium" placeholder="Email Address" required>
+          <input type="password" x-model="loginForm.password" class="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-accent outline-none text-base font-medium" placeholder="Password" required>
           <button type="submit" class="w-full py-3.5 bg-primary text-white rounded-xl font-bold shadow-lg hover:bg-slate-800 transition-all active:scale-[0.98]">Masuk Aplikasi</button>
         </form>
         <div class="mt-8 text-center text-xs text-slate-400">
@@ -414,8 +496,8 @@
       <div x-show="isSidebarOpen" @click="isSidebarOpen = false" x-transition.opacity class="fixed inset-0 bg-slate-900/60 z-40 md:hidden backdrop-blur-sm"></div>
 
       <!-- SIDEBAR -->
-      <aside :class="isSidebarOpen ? 'translate-x-0' : '-translate-x-full'" class="fixed inset-y-0 left-0 z-50 w-72 bg-white text-slate-800 transform transition-transform duration-300 md:translate-x-0 md:static md:flex md:flex-col shadow-2xl border-r border-slate-100">
-        <div class="p-6 border-b border-slate-100 flex justify-between items-center">
+      <aside :class="isSidebarOpen ? 'translate-x-0' : '-translate-x-full'" class="fixed inset-y-0 left-0 z-50 w-72 bg-white text-slate-800 transform transition-transform duration-300 md:translate-x-0 md:static md:flex md:flex-col shadow-2xl border-r border-slate-100 pb-safe">
+        <div class="p-6 border-b border-slate-100 flex justify-between items-center pt-safe">
           <div class="flex items-center gap-3">
             <img :src="logoUrl" alt="Logo" class="h-8 w-auto object-contain">
             <span class="font-bold text-lg tracking-tight text-slate-900">VISTARA</span>
@@ -423,7 +505,7 @@
           <button @click="isSidebarOpen = false" class="md:hidden text-slate-400 hover:text-slate-900"><i data-lucide="x"></i></button>
         </div>
 
-        <nav class="flex-1 overflow-y-auto py-6 px-4 space-y-2">
+        <nav class="flex-1 overflow-y-auto py-6 px-4 space-y-2 no-scrollbar">
           <div class="px-4 text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Main Menu</div>
           <template x-for="item in [
             {id:'dashboard', icon:'pie-chart', label:'Dashboard'},
@@ -440,7 +522,6 @@
             <i data-lucide="package" width="20" class="mr-3"></i> <span class="font-medium text-sm">Produk</span>
           </a>
           
-          <!-- MENU AKSES: Superadmin, Owner, Manager, SPV (Marketing tidak akses) -->
           <template x-if="['superadmin', 'owner', 'manager', 'spv'].includes(user?.role)">
             <div class="space-y-2">
               <template x-if="['superadmin', 'owner'].includes(user?.role)">
@@ -452,9 +533,16 @@
               <a @click="setView('users')" class="flex items-center px-4 py-3 rounded-xl text-slate-500 hover:bg-slate-50 hover:text-primary cursor-pointer transition-all"><i data-lucide="user-cog" width="20" class="mr-3"></i> <span class="font-medium text-sm">Users</span></a>
             </div>
           </template>
+
+          <!-- PWA INSTALL BUTTON (Only shows if installable) -->
+          <div x-show="installPrompt" class="mt-8 px-4">
+             <button @click="installPWA" class="w-full bg-slate-900 text-white p-3 rounded-xl flex items-center justify-center gap-2 text-sm font-bold shadow-lg">
+                <i data-lucide="download" width="16"></i> Install App
+             </button>
+          </div>
         </nav>
 
-        <div class="p-4 bg-white border-t border-slate-100">
+        <div class="p-4 bg-white border-t border-slate-100 pb-safe">
           <div class="flex items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100">
             <div class="w-10 h-10 rounded-full bg-gradient-to-tr from-accent to-blue-400 flex items-center justify-center font-bold text-sm shadow-md text-white" x-text="user?.name.substring(0,2).toUpperCase()"></div>
             <div class="flex-1 min-w-0">
@@ -469,13 +557,13 @@
       <!-- CONTENT AREA -->
       <main class="flex-1 flex flex-col h-screen overflow-hidden bg-background relative">
         <!-- Header Mobile -->
-        <header class="md:hidden bg-white/80 backdrop-blur border-b border-slate-200 p-4 flex items-center justify-between sticky top-0 z-30">
+        <header class="md:hidden bg-white/80 backdrop-blur border-b border-slate-200 p-4 flex items-center justify-between sticky top-0 z-30 pt-safe">
           <button @click="isSidebarOpen = true" class="p-2 text-slate-600 bg-slate-100 rounded-lg"><i data-lucide="menu"></i></button>
           <span class="font-bold text-slate-800 capitalize" x-text="view.replace('_', ' ')"></span>
           <div class="w-8"></div>
         </header>
 
-        <div class="flex-1 overflow-y-auto p-4 md:p-8 pb-24 md:pb-8 scroll-smooth">
+        <div class="flex-1 overflow-y-auto p-4 md:p-8 pb-32 md:pb-8 scroll-smooth no-scrollbar">
           
           <!-- DASHBOARD -->
           <template x-if="view === 'dashboard'">
@@ -564,7 +652,7 @@
               <div class="flex gap-3">
                 <div class="relative flex-1">
                   <i data-lucide="search" width="18" class="absolute left-4 top-3.5 text-slate-400"></i>
-                  <input type="text" x-model="filters.search" class="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-accent outline-none shadow-sm" placeholder="Cari nama, perusahaan...">
+                  <input type="text" x-model="filters.search" class="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-base focus:ring-2 focus:ring-accent outline-none shadow-sm" placeholder="Cari nama, perusahaan...">
                 </div>
                 <button @click="showFilterModal=true" class="bg-white border border-slate-200 px-4 rounded-xl text-slate-600 hover:bg-slate-50 shadow-sm relative">
                   <i data-lucide="filter" width="20"></i>
@@ -782,14 +870,14 @@
           <template x-if="formType === 'customer'">
             <div class="space-y-5">
               <div class="grid grid-cols-2 gap-4">
-                <input x-model="formData.name" placeholder="Nama Customer *" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required>
-                <input x-model="formData.company" placeholder="Perusahaan" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none">
+                <input x-model="formData.name" placeholder="Nama Customer *" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-accent outline-none" required>
+                <input x-model="formData.company" placeholder="Perusahaan" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-accent outline-none">
               </div>
-              <input x-model="formData.email" placeholder="Email *" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required>
-              <input x-model="formData.phone" placeholder="Telepon *" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required>
+              <input x-model="formData.email" placeholder="Email *" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-accent outline-none" required>
+              <input x-model="formData.phone" placeholder="Telepon *" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-accent outline-none" required>
               <div class="grid grid-cols-2 gap-4">
-                <select x-model="formData.status" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm"><option value="New">New</option><option value="Cold">Cold</option><option value="Warm">Warm</option><option value="Hot">Hot</option><option value="Deal">Deal</option></select>
-                <select x-model="formData.source_id" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm"><template x-for="s in metaData.sources" :key="s.id"><option :value="s.id" x-text="s.name"></option></template></select>
+                <select x-model="formData.status" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-base"><option value="New">New</option><option value="Cold">Cold</option><option value="Warm">Warm</option><option value="Hot">Hot</option><option value="Deal">Deal</option></select>
+                <select x-model="formData.source_id" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-base"><template x-for="s in metaData.sources" :key="s.id"><option :value="s.id" x-text="s.name"></option></template></select>
               </div>
               <div class="bg-slate-50 p-4 rounded-xl border border-slate-100">
                 <label class="text-xs font-bold text-slate-500 uppercase mb-3 block">Produk Diminati</label>
@@ -802,8 +890,8 @@
                   </template>
                 </div>
               </div>
-              <input type="number" x-model="formData.estimation_value" placeholder="Dana Ready (Rp)" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-900 focus:ring-2 focus:ring-accent outline-none">
-              <textarea x-model="formData.description" placeholder="Catatan..." class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none h-24 resize-none"></textarea>
+              <input type="number" x-model="formData.estimation_value" placeholder="Dana Ready (Rp)" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base font-bold text-slate-900 focus:ring-2 focus:ring-accent outline-none">
+              <textarea x-model="formData.description" placeholder="Catatan..." class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-accent outline-none h-24 resize-none"></textarea>
             </div>
           </template>
 
@@ -825,37 +913,37 @@
               </div>
               <div class="grid grid-cols-1 gap-4">
                 <div class="bg-slate-100 p-1.5 rounded-xl flex"><button type="button" @click="formData.status='pending'" class="flex-1 py-2.5 text-sm font-bold rounded-lg transition-all" :class="formData.status==='pending'?'bg-white shadow text-slate-900':'text-slate-500'">Pending</button><button type="button" @click="formData.status='done'" class="flex-1 py-2.5 text-sm font-bold rounded-lg transition-all" :class="formData.status==='done'?'bg-white shadow text-emerald-600':'text-slate-500'">Selesai</button></div>
-                <div class="relative"><i data-lucide="calendar" width="18" class="absolute left-4 top-3.5 text-slate-400"></i><input type="date" x-model="formData.due_date" class="w-full pl-11 pr-4 py-3 border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-accent outline-none"></div>
+                <div class="relative"><i data-lucide="calendar" width="18" class="absolute left-4 top-3.5 text-slate-400"></i><input type="date" x-model="formData.due_date" class="w-full pl-11 pr-4 py-3 border border-slate-200 rounded-xl text-base font-medium focus:ring-2 focus:ring-accent outline-none"></div>
               </div>
-              <div><label class="text-xs font-bold text-slate-500 uppercase mb-2 block">Hasil / Catatan</label><textarea x-model="formData.notes" placeholder="Tulis hasil interaksi..." class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none h-32 resize-none" required></textarea></div>
+              <div><label class="text-xs font-bold text-slate-500 uppercase mb-2 block">Hasil / Catatan</label><textarea x-model="formData.notes" placeholder="Tulis hasil interaksi..." class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-accent outline-none h-32 resize-none" required></textarea></div>
             </div>
           </template>
 
           <template x-if="formType === 'product'">
             <div class="space-y-5">
-              <input x-model="formData.name" placeholder="Nama Produk" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required>
-              <input x-model="formData.description" placeholder="Deskripsi" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none">
-              <div class="grid grid-cols-2 gap-4"><input type="number" x-model="formData.price" placeholder="Harga" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required><input type="number" x-model="formData.stock" placeholder="Stok" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required></div>
+              <input x-model="formData.name" placeholder="Nama Produk" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-accent outline-none" required>
+              <input x-model="formData.description" placeholder="Deskripsi" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-accent outline-none">
+              <div class="grid grid-cols-2 gap-4"><input type="number" x-model="formData.price" placeholder="Harga" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-accent outline-none" required><input type="number" x-model="formData.stock" placeholder="Stok" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-accent outline-none" required></div>
             </div>
           </template>
 
           <template x-if="['user','source','division'].includes(formType)">
              <div class="space-y-5">
-                <input x-model="formData.name" placeholder="Nama" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-accent outline-none" required>
+                <input x-model="formData.name" placeholder="Nama" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-accent outline-none" required>
                 <template x-if="formType==='user'">
                    <div class="space-y-4">
-                      <input type="email" x-model="formData.email" placeholder="Email" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none">
-                      <input type="password" x-model="formData.password" placeholder="Password" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none">
+                      <input type="email" x-model="formData.email" placeholder="Email" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base outline-none">
+                      <input type="password" x-model="formData.password" placeholder="Password" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base outline-none">
                       
                       <!-- ROLE SELECTION (DYNAMIC BASED ON RBAC) -->
-                      <select x-model="formData.role" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm">
+                      <select x-model="formData.role" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-base">
                          <template x-for="r in getAvailableRoles()" :key="r.id">
                             <option :value="r.id" x-text="r.label"></option>
                          </template>
                       </select>
 
                       <!-- DIVISION SELECTION (LOCKED FOR MANAGER & SPV) -->
-                      <select x-model="formData.division_id" :disabled="['manager', 'spv'].includes(user.role)" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm disabled:bg-slate-100 disabled:text-slate-500">
+                      <select x-model="formData.division_id" :disabled="['manager', 'spv'].includes(user.role)" class="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-base disabled:bg-slate-100 disabled:text-slate-500">
                          <option value="">Pilih Divisi</option>
                          <template x-for="d in metaData.divisions" :key="d.id">
                             <option :value="d.id" x-text="d.name"></option>
@@ -868,6 +956,21 @@
 
           <button type="submit" class="w-full bg-primary text-white font-bold py-4 rounded-xl mt-8 shadow-lg shadow-primary/20 hover:bg-slate-800 transition-transform active:scale-[0.98]">Simpan Data</button>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- FILTER MODAL -->
+  <div x-show="showFilterModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" x-cloak x-transition.opacity>
+    <div class="bg-white w-full max-w-md rounded-[2rem] shadow-2xl overflow-hidden" @click.away="showFilterModal=false">
+      <div class="p-5 border-b border-slate-100 flex justify-between items-center"><h3 class="font-bold text-lg">Filter</h3><button @click="showFilterModal=false"><i data-lucide="x"></i></button></div>
+      <div class="p-6 space-y-5">
+         <div class="grid grid-cols-2 gap-3">
+            <div><label class="text-xs font-bold text-slate-400">Dari</label><input type="date" x-model="filters.startDate" class="w-full border rounded-xl p-2 text-base"></div>
+            <div><label class="text-xs font-bold text-slate-400">Sampai</label><input type="date" x-model="filters.endDate" class="w-full border rounded-xl p-2 text-base"></div>
+         </div>
+         <select x-model="filters.status" class="w-full border p-3 rounded-xl text-base bg-white"><option value="">Semua Status</option><option value="New">New</option><option value="Cold">Cold</option><option value="Hot">Hot</option></select>
+         <div class="flex gap-3 pt-4"><button @click="resetFilters" class="flex-1 py-3 rounded-xl font-bold text-slate-500 hover:bg-slate-50">Reset</button><button @click="showFilterModal=false" class="flex-1 bg-primary text-white py-3 rounded-xl font-bold shadow-lg">Terapkan</button></div>
       </div>
     </div>
   </div>
